@@ -10,5 +10,4 @@ libraryDependencies += "com.typesafe.akka" %% "akka-actor" % "2.3.9"
 
 libraryDependencies += "com.typesafe.akka" %% "akka-remote" % "2.3.9"
 
-libraryDependencies += "org.scala-lang" % "scala-swing" % "2.10.4"
-
+libraryDependencies += "org.scala-lang.modules" %% "scala-swing" % "1.0.1"
