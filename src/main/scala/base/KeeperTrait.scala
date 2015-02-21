@@ -2,7 +2,8 @@ package base
 
 import akka.actor._
 import akka.util.Timeout
-import akka.pattern.{ask, pipe}
+import akka.pattern.{ask,pipe}
+import ui.GUI
 import scala.collection.mutable
 import scala.collection.mutable.MutableList
 import scala.concurrent.duration._
@@ -15,38 +16,41 @@ trait KeeperTrait extends Actor with ActorLogging {
   // переменная важная - нужна только системе
   implicit val timeout = Timeout(5 seconds)
   // сколько запускаем нод изначально
-  val startNodeCount = 10
+  val startNodeCount = 2
   var nodeCounter = 0
   // список нод, для опроса
   var nodeList: MutableList[ActorRef] = MutableList.empty
   // счётчики для кэша
   var counters: mutable.Map[ActorRef, Int] = mutable.Map.empty
-  // переменная, которая отвечает за поток
-  val system = ActorSystem("system")
 
   // запуск без стартера
   // создаём ноды
   (1 to startNodeCount).foreach{_ => this.addNode() }
   updateNodeCounters()
   // говорим системе не падать
-  system.awaitTermination()
 
   // добавляем ноду, оповещаем всех о новой ноде
   def addNode(): Unit = {
-    val newNode = system.actorOf(Props(new Node(nodeList)), "Node" + nodeCounter.toString)
+    log.info("add node")
+    val newNode = context.actorOf(Props(new Node(nodeList)), "Node" + nodeCounter.toString)
+    nodeCounter += 1
     nodeList.foreach{ node => node ! AddNode(newNode) }
     nodeList += newNode
   }
 
   // удаляем ноду и предупреждаем всех
   def removeNode(): Unit = {
+    log.info("remove node")
     val last = nodeList.last
-    nodeList = nodeList filterNot(_ == last)
+    nodeList = nodeList.filterNot(_ == last).clone()
     nodeList.foreach{ node => node ! RemoveNode(last) }
+    last ! SetClose
+    context.stop(last)
   }
 
   // выставляем новую задержку всем нодам
   def setDelay(newDelay: Int): Unit = {
+    log.info("set delay")
     nodeList.foreach{ node => node ! SetDelay(newDelay) }
   }
 
@@ -57,15 +61,33 @@ trait KeeperTrait extends Actor with ActorLogging {
 
   // циклично обновляем данные счётчика для интерфейса
   def updateNodeCounters(): Unit = {
-    system.scheduler.scheduleOnce(500 milliseconds)(this.updateNodeCounters())
-    nodeList.foreach{ node => node ? GetLastSendedMessCount }
+    context.system.scheduler.scheduleOnce(500 milliseconds)(this.updateNodeCounters())
+    //nodeList.foreach{ node => node ? GetLastSendedMessCount }
+    nodeList.foreach{ node =>
+      val response = node ? LastMessCountRequest()
+      response pipeTo self
+    }
+  }
+
+  def shutdown(): Unit = {
+    nodeList.foreach{ node =>
+      node ! SetClose
+    }
+    context.stop(self)
   }
 
   def receive = {
-    case r: SetLastSendedMessCount =>
-      updateCounter(sender, r.count)
+    case r: AddNode =>
+      addNode()
+    case r: RemoveNode =>
+      removeNode()
+    case r: SetDelay =>
+      setDelay(r.value)
+    case r: LastMessCountPush =>
+      updateCounter(r.node, r.count)
+    case r: SetClose =>
+      shutdown()
     case r =>
       log.warning(s"Unexpected: $r")
-
   }
 }

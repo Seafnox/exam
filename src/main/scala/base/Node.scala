@@ -5,19 +5,26 @@ import scala.collection.mutable._
 import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext
 import ExecutionContext.Implicits.global
+
+case class SendRequest(value: String)
+case class AddNode(new_node: ActorRef)
+case class RemoveNode(node: ActorRef)
+case class LastMessCountPush(node: ActorRef, count: Int)
+case class LastMessCountRequest()
+case class SetDelay(value: Int)
+case class GetResponse(key: Option[String])
+case class SetClose()
 import akka.pattern.{ask, pipe}
 
 class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
   // интервал выборки последних сообщений, которыми будет засорятся память, до момента очистки
-  val lastRanger = 60
-  // переменная, которая отвечает за поток
-  val system = ActorSystem("system")
+  val lastRanger : Long = 1 * 1000
   // пока решение прекращения работы ноды по переменной, видел cancellable, но не разобрался
   var isActive = true
   // список нод, по которым происходит отправление сообщений, динамический
   var nodeList: MutableList[ActorRef] = _nodeList
   // задержка перед следующей массовой отправкой сообщений
-  var delay: Int = 100
+  var delay: Int = 400
   // список, содержащий времена доставки сообщений, сами сообщения нам не нужны
   var sendedMessList: MutableList[Long] = MutableList.empty
   // переменная содержащая количество сообщений за интервал, обновляется при отправки сообщений другим нодам
@@ -31,13 +38,13 @@ class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
   def send(node: ActorRef, text: String) = {
     // тут проблема
     node ! SendRequest(text)
-    sendedMessList += System.currentTimeMillis / 1000
+    sendedMessList += System.currentTimeMillis
   }
 
   // метод делает массовую отправку сообщений во все известные ноды
   def sendAll(text: String): Unit = {
     if (isActive) {
-      system.scheduler.scheduleOnce(delay milliseconds)(this.sendAll(text))
+      context.system.scheduler.scheduleOnce(delay milliseconds)(this.sendAll(text))
     }
     // запускаем обновление счётчика, чтобы не терзать процессор
     updateLastSendedMessCount()
@@ -46,15 +53,15 @@ class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
 
   // очищаем список от устаревших данных, захламляя память мёртвыми данными
   def removeOlderMessages() = {
-    val timestamp: Long = System.currentTimeMillis / 1000
-    sendedMessList = sendedMessList filter(_ >= timestamp - lastRanger)
+    val diff: Long = System.currentTimeMillis - lastRanger
+    sendedMessList = sendedMessList.filter(_ >= diff).clone()
   }
 
   // метод обновляет данные об отправленных сообщениях, пользуясь текущей меткой времени
   def updateLastSendedMessCount() = {
-    val timestamp: Long = System.currentTimeMillis / 1000
-    lastSendedMessCount = sendedMessList.filter(_ >= timestamp - lastRanger).size
-    removeOlderMessages()    
+    removeOlderMessages()
+    val timestamp: Long = System.currentTimeMillis
+    lastSendedMessCount = sendedMessList.count(_ >= timestamp - lastRanger)
   }
 
   // приём
@@ -62,24 +69,30 @@ class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
     // Выставляем новое значение задержки сообщений
     case r: SetDelay =>
       delay = r.value
+      log.info("delay setted " + delay)
     // добавляем новую ноду
     case r: AddNode =>
       nodeList += r.new_node
+      log.info("add New Node " + r.new_node.toString())
     // удаляем старую ноду
     case r: RemoveNode =>
       if (nodeList.contains(r.node)) {
-        nodeList = nodeList filterNot(_ == r.node)
+        nodeList = nodeList.filterNot(_ == r.node).clone()
       }
+      log.info("remove Node " + r.node.toString())
     // гостевое сообщение от дружественной ноды
     case r: SendRequest =>
       // пока ничего не делаем
-      log.info(s"Node $nodeName send $lastSendedMessCount until last second")
+      // log.info(s"Node $nodeName send $lastSendedMessCount until last second")
     // отдаём данные о последних секундах. это для интерфейса
-    case r: GetLastSendedMessCount =>
-      sender ! SetLastSendedMessCount(lastSendedMessCount)
-    // ошибка какая-то
+    case r: LastMessCountRequest =>
+      //log.info(sender + " " + lastSendedMessCount)
+      sender ! LastMessCountPush(self, lastSendedMessCount)
     case r: SetClose =>
       isActive = false
+      log.info("Shut down node")
+      context.stop(self)
+    // ошибка какая-то
     case r =>
       log.warning(s"Unexpected: $r")
   }
