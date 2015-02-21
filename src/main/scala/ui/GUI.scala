@@ -1,14 +1,16 @@
 package ui
 
 import akka.actor.ActorRef
-import base.{Node, AddNode, RemoveNode, KeeperTrait}
+import base._
+import scala.collection.mutable
 import scala.swing._
 
 /**
  * Created by Кирилл on 20.02.2015.
  */
 
-class GUI(keeper: KeeperTrait) extends MainFrame {
+class GUI(keeper: ActorRef) extends MainFrame {
+  println("Start compiling gui")
   title = "Визуальная оболочка мониторинга удалённо запущенных приложений"
   val box = new BoxPanel(Orientation.Vertical)
   val sliderLabelText:String = "Ползунок отвечает за задержку между пакетами сообщений в потоке. Текущая задержка "
@@ -20,10 +22,11 @@ class GUI(keeper: KeeperTrait) extends MainFrame {
     value = 100
     labels = Map(0 -> new Label("0"),50 -> new Label("50"),100 -> new Label("100"))
     paintLabels = true
+
   }
-  var nodeLabelsWrapper = new BoxPanel(Orientation.Horizontal)
+  var nodeLabelsWrapper = new BoxPanel(Orientation.Vertical)
   box.contents += nodeLabelsWrapper
-  box.contents += new Label("")
+  box.contents += new Label(" ")
   box.contents += new BoxPanel(Orientation.Horizontal) {
     contents += Button("Add Node") { addNode() }
     contents += Swing.HGlue
@@ -32,19 +35,29 @@ class GUI(keeper: KeeperTrait) extends MainFrame {
   contents = box
 
   def addNode(): Unit = {
-    keeper.sender().tell(AddNode,keeper.sender())
+
+    println("Push CreateNode")
+    keeper.tell(CreateNode(),null)
   }
 
   def removeNode(): Unit = {
-    keeper.sender().tell(RemoveNode,keeper.sender())
+
+    println("Push DestroyNode")
+    keeper.tell(DestroyNode(),null)
   }
 
-  def updateCounters(): Unit = {
-    val counters = keeper.counters
+  def updateCounters(counters: mutable.Map[ActorRef, Int]): Unit = {
     nodeLabelsWrapper.contents.clear()
     counters.foreach{counter =>
-      nodeLabelsWrapper.contents += new Label("Node" + counter._1.toString() + " - " + counter._2)
+      nodeLabelsWrapper.contents += new Label("Node Unknown" + " - " + counter._2)
     }
     nodeLabelsWrapper.repaint()
   }
+
+  override def closeOperation() {
+    keeper.tell(SetClose(), null)
+    sys.exit(0)
+  }
+
+  println("End compiling gui")
 }
