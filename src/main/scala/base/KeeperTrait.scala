@@ -32,48 +32,67 @@ trait KeeperTrait extends Actor with ActorLogging {
   // добавляем ноду, оповещаем всех о новой ноде
   def addNode(): Unit = {
     log.info("add node")
-    val newNode = context.actorOf(Props(new Node(nodeList)), "Node" + nodeCounter.toString)
-    nodeCounter += 1
-    nodeList.foreach{ node => node ! AddNode(newNode) }
-    nodeList += newNode
+    nodeList.synchronized {
+      val newNode = context.actorOf(Props(new Node(nodeList)), "Node" + nodeCounter.toString)
+      nodeCounter += 1
+      nodeList.foreach{ node => node ! AddNode(newNode) }
+      nodeList += newNode
+    }
+  }
+
+  def removeNodeCounter(node: ActorRef): Unit = {
+    counters.synchronized {
+      counters -= node
+    }
   }
 
   // удаляем ноду и предупреждаем всех
   def removeNode(): Unit = {
     log.info("remove node")
-    val last = nodeList.last
-    nodeList = nodeList.filterNot(_ == last).clone()
-    nodeList.foreach{ node => node ! RemoveNode(last) }
-    last ! SetClose
-    context.stop(last)
+    nodeList.synchronized {
+      val last = nodeList.last
+      nodeList = nodeList.filterNot(_ == last)//.clone()
+      nodeList.foreach{ node => node ! RemoveNode(last) }
+      removeNodeCounter(last)
+      last ! SetClose
+      context.stop(last)
+    }
   }
 
   // выставляем новую задержку всем нодам
   def setDelay(newDelay: Int): Unit = {
     log.info("set delay")
-    nodeList.foreach{ node => node ! SetDelay(newDelay) }
+    nodeList.synchronized {
+      nodeList.foreach { node => node ! SetDelay(newDelay)}
+    }
   }
 
   // обновляем возвращённые данные счётчика
   def updateCounter(node:ActorRef, count:Int): Unit = {
-    counters.update(node, count)
+    counters.synchronized {
+      counters.update(node, count)
+    }
   }
 
   // циклично обновляем данные счётчика для интерфейса
   def updateNodeCounters(): Unit = {
-    context.system.scheduler.scheduleOnce(500 milliseconds)(this.updateNodeCounters())
-    //nodeList.foreach{ node => node ? GetLastSendedMessCount }
-    nodeList.foreach{ node =>
-      val response = node ? LastMessCountRequest()
-      response pipeTo self
+    nodeList.synchronized {
+      context.system.scheduler.scheduleOnce(500 milliseconds)(this.updateNodeCounters())
+      //nodeList.foreach{ node => node ? GetLastSendedMessCount }
+      nodeList.foreach{ node =>
+        val response = node ? LastMessCountRequest()
+        response pipeTo self
+      }
     }
   }
 
   def shutdown(): Unit = {
-    nodeList.foreach{ node =>
-      node ! SetClose
-    }
+    nodeList.synchronized {
+      nodeList.foreach { node =>
+        node ! SetClose
+      }
     context.stop(self)
+  }
   }
 
   def receive = {

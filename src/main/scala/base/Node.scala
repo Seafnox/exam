@@ -24,37 +24,41 @@ class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
   // список нод, по которым происходит отправление сообщений, динамический
   var nodeList: MutableList[ActorRef] = _nodeList
   // задержка перед следующей массовой отправкой сообщений
-  var delay: Int = 400
+  var delay: Int = 100
   // список, содержащий времена доставки сообщений, сами сообщения нам не нужны
   var sendedMessList: MutableList[Long] = MutableList.empty
   // переменная содержащая количество сообщений за интервал, обновляется при отправки сообщений другим нодам
   var lastSendedMessCount = 0
   // просто любое имя идентификации ноды
-  var nodeName = this.toString
+  var nodeName = self.toString
   // начать работу с отправки
   sendAll("bang!")
 
   // метод отправляет запрос на доставку сообщения в конкретную ноду и багополучно об этом забывает
   def send(node: ActorRef, text: String) = {
-    // тут проблема
-    node ! SendRequest(text)
-    sendedMessList += System.currentTimeMillis
+    sendedMessList.synchronized {
+      node ! SendRequest(text)
+      sendedMessList += System.currentTimeMillis
+    }
   }
 
   // метод делает массовую отправку сообщений во все известные ноды
   def sendAll(text: String): Unit = {
-    if (isActive) {
-      context.system.scheduler.scheduleOnce(delay milliseconds)(this.sendAll(text))
+    nodeList.synchronized {
+      if (isActive) {
+        // шедуль вызывает ошибку, при попытке вызвать закрытую ноду. надо научиться её предотвращать
+        context.system.scheduler.scheduleOnce(delay milliseconds)(this.sendAll(text))
+      }
+      // запускаем обновление счётчика, чтобы не терзать процессор
+      updateLastSendedMessCount()
+      nodeList.foreach { node => send(node, text)}
     }
-    // запускаем обновление счётчика, чтобы не терзать процессор
-    updateLastSendedMessCount()
-    nodeList.foreach{node => send(node, text)}
   }
 
   // очищаем список от устаревших данных, захламляя память мёртвыми данными
   def removeOlderMessages() = {
     val diff: Long = System.currentTimeMillis - lastRanger
-    sendedMessList = sendedMessList.filter(_ >= diff).clone()
+    sendedMessList = sendedMessList.filter(_ >= diff)//.clone()
   }
 
   // метод обновляет данные об отправленных сообщениях, пользуясь текущей меткой времени
@@ -72,18 +76,22 @@ class Node(_nodeList: MutableList[ActorRef]) extends Actor with ActorLogging {
       log.info("delay setted " + delay)
     // добавляем новую ноду
     case r: AddNode =>
-      nodeList += r.new_node
+      nodeList.synchronized {
+        nodeList += r.new_node
+      }
       log.info("add New Node " + r.new_node.toString())
     // удаляем старую ноду
     case r: RemoveNode =>
-      if (nodeList.contains(r.node)) {
-        nodeList = nodeList.filterNot(_ == r.node).clone()
+      nodeList.synchronized {
+        if (nodeList.contains(r.node)) {
+          nodeList = nodeList.filterNot(_ == r.node) //.clone()
+        }
       }
       log.info("remove Node " + r.node.toString())
     // гостевое сообщение от дружественной ноды
     case r: SendRequest =>
       // пока ничего не делаем
-      // log.info(s"Node $nodeName send $lastSendedMessCount until last second")
+      log.info(s"Node $nodeName send $lastSendedMessCount until last second")
     // отдаём данные о последних секундах. это для интерфейса
     case r: LastMessCountRequest =>
       //log.info(sender + " " + lastSendedMessCount)
